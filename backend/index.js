@@ -13,7 +13,7 @@ const crypto = require('crypto')
 
 const app = express()
 const PORT = Number(process.env.PORT || 5001)
-const FRONTEND = process.env.FRONTEND_URL || 'https://2025-taupe.vercel.app/'
+const FRONTEND = process.env.FRONTEND_URL || 'https://2025-vhmu.vercel.app/'
 const PRICE_GBP = Number(process.env.TICKET_PRICE_GBP || 12)
 
 const EVENT = {
@@ -73,7 +73,8 @@ app.use(express.json())
 const allowedOrigins = [
   'http://localhost:5173',         // Vite local dev
   'http://localhost:3000',         // CRA dev
-  'https://n2025-iota.vercel.app'  // Vercel deployed frontend
+  'https://n2025-iota.vercel.app',
+  'https://2025-vhmu.vercel.app/'  // Vercel deployed frontend
 ]
 
 app.use(cors({
@@ -328,5 +329,5 @@ function makeTicketCode() {
 
 /* -------------------- Start -------------------- */
 app.listen(PORT, ()=> {
-  console.log(`🚀 Backend running on https://n2025.onrender.com`)
+  console.log(`🚀 Backend running`)
 })
