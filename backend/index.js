@@ -200,50 +200,28 @@ app.post('/api/issue-ticket', async (req,res)=>{
 })
 
 /* -------------------- Admin Auth + Scanner APIs -------------------- */
-app.post('/api/admin/login', (req,res)=>{
-  const { username, password } = req.body || {}
-  if (username === process.env.ADMIN_USER && password === process.env.ADMIN_PASS){
-    const token = jwt.sign({ role:'admin' }, process.env.ADMIN_JWT_SECRET, { expiresIn:'12h' })
-    return res.json({ token })
-  }
-  res.status(401).json({ error:'Invalid credentials' })
-})
+app.post('/api/admin/scan', requireAdmin, async (req, res) => {
+  const { code, markUsed, gate } = req.body;
+  if (!code) return res.status(400).json({ error: 'code required' });
 
-function requireAdmin(req,res,next){
-  const auth = req.headers.authorization || ''
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null
-  if (!token) return res.status(401).json({ error:'Missing token' })
-  try{
-    jwt.verify(token, process.env.ADMIN_JWT_SECRET)
-    next()
-  }catch(e){ res.status(401).json({ error:'Invalid token' }) }
-}
+  const ticket = await Ticket.findOne({ code });
+  if (!ticket) return res.json({ status: 'not_found' });
 
-app.get('/api/admin/ticket/:code', requireAdmin, async (req,res)=>{
-  const t = await Ticket.findOne({ code: req.params.code })
-  if (!t) return res.status(404).json({ error:'Ticket not found' })
-  res.json({ code:t.code, used:t.used, usedAt:t.usedAt, event:t.eventLabel, name:t.name, email:t.email })
-})
-
-app.post('/api/admin/scan', requireAdmin, async (req,res)=>{
-  const { code, markUsed=true, gate } = req.body || {}
-  if (!code) return res.status(400).json({ error:'code required' })
-  const t = await Ticket.findOne({ code })
-  if (!t) return res.status(404).json({ status:'not_found' })
-
-  if (t.used) {
-    return res.json({ status:'already_used', usedAt:t.usedAt, code:t.code, name:t.name, event:t.eventLabel })
+  if (ticket.used) {
+    return res.json({ status: 'already_used', usedAt: ticket.usedAt });
   }
 
-  if (markUsed){
-    t.used = true
-    t.usedAt = new Date()
-    if (gate) t.usedBy = gate
-    await t.save()
+  if (markUsed) {
+    ticket.used = true;
+    ticket.usedAt = new Date();
+    ticket.usedBy = gate || 'Gate A';
+    await ticket.save();
+    return res.json({ status: 'valid_marked', eventLabel: ticket.eventLabel });
   }
 
-  res.json({ status: markUsed ? 'valid_marked' : 'valid', code:t.code, name:t.name, event:t.eventLabel })
-})
+  res.json({ status: 'valid', eventLabel: ticket.eventLabel });
+});
+
 
 /* -------------------- Mailer & PDF -------------------- */
 async function createTransporter() {
