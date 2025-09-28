@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode'
 
-const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+const API = import.meta.env.VITE_API_BASE_URL
 
 export default function Admin() {
   const [stage, setStage] = useState(localStorage.getItem('admin_token') ? 'scan' : 'login')
@@ -12,17 +12,18 @@ export default function Admin() {
   const [manual, setManual] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const [usingFront, setUsingFront] = useState(true) 
+  const [usingFront, setUsingFront] = useState(false) // default BACK camera for scanning
   const [isRunning, setIsRunning] = useState(false)
 
-  const qrRef = useRef(null)       
-  const readerId = 'reader'        
+  const qrRef = useRef(null)
+  const readerId = 'reader'
 
+  /* ---------------- CAMERA ---------------- */
   useEffect(() => {
     if (stage !== 'scan') return
     startScanner(usingFront)
     return () => { stopScanner() }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line
   }, [stage, usingFront])
 
   async function startScanner(front) {
@@ -30,13 +31,13 @@ export default function Admin() {
       await stopScanner()
       if (!qrRef.current) qrRef.current = new Html5Qrcode(readerId, false)
 
-      const constraints = { facingMode: front ? 'user' : { exact: 'environment' } }
+      const constraints = { facingMode: front ? 'user' : 'environment' }
 
       await qrRef.current.start(
         constraints,
         {
           fps: 10,
-          qrbox: 260,
+          qrbox: 250,
           formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
         },
         onScanSuccess,
@@ -45,15 +46,6 @@ export default function Admin() {
       setIsRunning(true)
       setMsg(front ? 'Using FRONT camera' : 'Using BACK camera')
     } catch (e) {
-      if (!usingFront) {
-        try {
-          const fallback = { facingMode: 'environment' }
-          await qrRef.current.start(fallback, { fps: 10, qrbox: 260 }, onScanSuccess, onScanError)
-          setIsRunning(true)
-          setMsg('Using BACK camera (fallback)')
-          return
-        } catch {}
-      }
       setMsg(`Camera error: ${e?.message || e}`)
     }
   }
@@ -68,7 +60,9 @@ export default function Admin() {
     } catch {}
   }
 
-  function onScanError() {}
+  function onScanError() {
+    // ignore continuous errors
+  }
 
   async function onScanSuccess(text) {
     let code = text.trim()
@@ -78,6 +72,7 @@ export default function Admin() {
     setLastCode(code)
   }
 
+  /* ---------------- LOGIN ---------------- */
   async function login() {
     setBusy(true); setMsg('')
     try {
@@ -90,9 +85,9 @@ export default function Admin() {
       if (!r.ok) throw new Error(data.error || 'Login failed')
       localStorage.setItem('admin_token', data.token)
       setStage('scan')
-      setMsg('Logged in. Scanner ready.')
+      setMsg('✅ Logged in. Ready to scan tickets.')
     } catch (e) {
-      setMsg(e.message)
+      setMsg(`❌ ${e.message}`)
     } finally { setBusy(false) }
   }
 
@@ -104,6 +99,7 @@ export default function Admin() {
     stopScanner()
   }
 
+  /* ---------------- VALIDATION ---------------- */
   async function validate(code, markUsed = true) {
     if (!code) return
     setBusy(true)
@@ -119,7 +115,7 @@ export default function Admin() {
       const data = await r.json()
       if (!r.ok) throw new Error(data.error || 'Scan failed')
 
-      if (data.status === 'valid_marked') setMsg(`✅ VALID — marked used · ${data.event}`)
+      if (data.status === 'valid_marked') setMsg(`✅ VALID — marked used · ${data.eventLabel}`)
       else if (data.status === 'already_used') setMsg(`⚠️ ALREADY USED · ${new Date(data.usedAt).toLocaleString()}`)
       else if (data.status === 'valid') setMsg(`✅ VALID`)
       else if (data.status === 'not_found') setMsg('❌ NOT FOUND')
@@ -128,6 +124,7 @@ export default function Admin() {
     } finally { setBusy(false) }
   }
 
+  /* ---------------- UI ---------------- */
   if (stage === 'login') {
     return (
       <section className="container max-w-md py-16">
@@ -137,7 +134,8 @@ export default function Admin() {
             value={username} onChange={e => setUsername(e.target.value)} />
           <input type="password" className="w-full border p-3 rounded-xl" placeholder="Password"
             value={password} onChange={e => setPassword(e.target.value)} />
-          <button onClick={login} disabled={busy} className="bg-primary text-white px-5 py-3 rounded-xl disabled:opacity-60">
+          <button onClick={login} disabled={busy}
+            className="bg-primary text-white px-5 py-3 rounded-xl disabled:opacity-60">
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
           {msg && <p className="text-sm text-gray-600">{msg}</p>}
@@ -159,11 +157,12 @@ export default function Admin() {
             onClick={() => setUsingFront(v => !v)}>
             {usingFront ? 'Use Back Camera' : 'Use Front Camera'}
           </button>
-          <button onClick={logout} className="px-4 py-2 rounded-xl border bg-gray-50">Logout</button>
+          <button onClick={logout}
+            className="px-4 py-2 rounded-xl border bg-gray-50">Logout</button>
         </div>
       </div>
 
-      <p className="text-gray-600 mb-4">{msg || (usingFront ? 'Using FRONT camera' : 'Using BACK camera')}</p>
+      <p className="text-gray-600 mb-4">{msg || 'Awaiting scan…'}</p>
 
       <div id={readerId} className="rounded-2xl overflow-hidden border" style={{ minHeight: 320 }} />
 
@@ -174,7 +173,7 @@ export default function Admin() {
         </div>
 
         <div className="p-4 rounded-xl border bg-white/70">
-          <div className="font-semibold mb-2">Manual Entry (fallback)</div>
+          <div className="font-semibold mb-2">Manual Entry</div>
           <div className="flex gap-2">
             <input
               className="flex-1 border p-3 rounded-xl"
@@ -190,9 +189,6 @@ export default function Admin() {
               Validate
             </button>
           </div>
-          <p className="text-xs text-gray-500 mt-2">
-            Tip: The QR encodes <code>T|&lt;code&gt;</code>. You can scan or type just the code.
-          </p>
         </div>
       </div>
     </section>
