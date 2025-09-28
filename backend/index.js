@@ -200,6 +200,16 @@ app.post('/api/issue-ticket', async (req,res)=>{
 })
 
 /* -------------------- Admin Auth + Scanner APIs -------------------- */
+// index.js backend
+app.post('/api/admin/login', (req, res) => {
+  const { username, password } = req.body
+  if (username === process.env.ADMIN_USER && password === process.env.ADMIN_PASS) {
+    const token = jwt.sign({ role: 'admin' }, process.env.ADMIN_JWT_SECRET, { expiresIn: '8h' })
+    return res.json({ token })
+  }
+  res.status(401).json({ error: 'Invalid credentials' })
+})
+
 // Admin middleware
 function requireAdmin(req, res, next) {
   try {
