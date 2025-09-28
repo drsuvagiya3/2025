@@ -12,13 +12,13 @@ export default function Admin() {
   const [manual, setManual] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const [usingFront, setUsingFront] = useState(false) // default BACK camera for scanning
+  const [usingFront, setUsingFront] = useState(false) // use BACK camera by default
   const [isRunning, setIsRunning] = useState(false)
 
   const qrRef = useRef(null)
   const readerId = 'reader'
 
-  /* ---------------- CAMERA ---------------- */
+  /* ---------- Camera ---------- */
   useEffect(() => {
     if (stage !== 'scan') return
     startScanner(usingFront)
@@ -35,13 +35,9 @@ export default function Admin() {
 
       await qrRef.current.start(
         constraints,
-        {
-          fps: 10,
-          qrbox: 250,
-          formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
-        },
+        { fps: 10, qrbox: 250, formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE] },
         onScanSuccess,
-        onScanError
+        () => {}
       )
       setIsRunning(true)
       setMsg(front ? 'Using FRONT camera' : 'Using BACK camera')
@@ -60,10 +56,6 @@ export default function Admin() {
     } catch {}
   }
 
-  function onScanError() {
-    // ignore continuous errors
-  }
-
   async function onScanSuccess(text) {
     let code = text.trim()
     if (code.startsWith('T|')) code = code.slice(2)
@@ -72,7 +64,7 @@ export default function Admin() {
     setLastCode(code)
   }
 
-  /* ---------------- LOGIN ---------------- */
+  /* ---------- Login ---------- */
   async function login() {
     setBusy(true); setMsg('')
     try {
@@ -81,11 +73,17 @@ export default function Admin() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
       })
-      const data = await r.json()
-      if (!r.ok) throw new Error(data.error || 'Login failed')
-      localStorage.setItem('admin_token', data.token)
-      setStage('scan')
-      setMsg('✅ Logged in. Ready to scan tickets.')
+
+      if (r.headers.get('content-type')?.includes('application/json')) {
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'Login failed')
+        localStorage.setItem('admin_token', data.token)
+        setStage('scan')
+        setMsg('✅ Logged in. Ready to scan.')
+      } else {
+        const text = await r.text()
+        throw new Error(`Unexpected response: ${text.slice(0, 50)}`)
+      }
     } catch (e) {
       setMsg(`❌ ${e.message}`)
     } finally { setBusy(false) }
@@ -95,11 +93,10 @@ export default function Admin() {
     localStorage.removeItem('admin_token')
     setStage('login')
     setMsg('')
-    setUsername(''); setPassword('')
     stopScanner()
   }
 
-  /* ---------------- VALIDATION ---------------- */
+  /* ---------- Validate Ticket ---------- */
   async function validate(code, markUsed = true) {
     if (!code) return
     setBusy(true)
@@ -112,9 +109,13 @@ export default function Admin() {
         },
         body: JSON.stringify({ code, markUsed, gate: 'Gate A' })
       })
-      const data = await r.json()
-      if (!r.ok) throw new Error(data.error || 'Scan failed')
 
+      if (!r.ok) {
+        const errText = await r.text()
+        throw new Error(errText || 'Scan failed')
+      }
+
+      const data = await r.json()
       if (data.status === 'valid_marked') setMsg(`✅ VALID — marked used · ${data.eventLabel}`)
       else if (data.status === 'already_used') setMsg(`⚠️ ALREADY USED · ${new Date(data.usedAt).toLocaleString()}`)
       else if (data.status === 'valid') setMsg(`✅ VALID`)
@@ -124,7 +125,7 @@ export default function Admin() {
     } finally { setBusy(false) }
   }
 
-  /* ---------------- UI ---------------- */
+  /* ---------- UI ---------- */
   if (stage === 'login') {
     return (
       <section className="container max-w-md py-16">
@@ -163,7 +164,6 @@ export default function Admin() {
       </div>
 
       <p className="text-gray-600 mb-4">{msg || 'Awaiting scan…'}</p>
-
       <div id={readerId} className="rounded-2xl overflow-hidden border" style={{ minHeight: 320 }} />
 
       <div className="mt-6 grid gap-3 md:grid-cols-2">
@@ -171,7 +171,6 @@ export default function Admin() {
           <div className="font-semibold mb-1">Status</div>
           <div className="text-sm">{msg || 'Awaiting scan…'}</div>
         </div>
-
         <div className="p-4 rounded-xl border bg-white/70">
           <div className="font-semibold mb-2">Manual Entry</div>
           <div className="flex gap-2">
