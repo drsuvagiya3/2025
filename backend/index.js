@@ -200,6 +200,22 @@ app.post('/api/issue-ticket', async (req,res)=>{
 })
 
 /* -------------------- Admin Auth + Scanner APIs -------------------- */
+// Admin middleware
+function requireAdmin(req, res, next) {
+  try {
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    if (!token) return res.status(401).json({ error: 'Missing token' });
+
+    const decoded = jwt.verify(token, process.env.ADMIN_JWT_SECRET);
+    if (!decoded) return res.status(401).json({ error: 'Invalid token' });
+
+    req.admin = decoded; // attach decoded data (e.g. username) to req
+    next();
+  } catch (err) {
+    res.status(401).json({ error: 'Unauthorized' });
+  }
+}
 app.post('/api/admin/scan', requireAdmin, async (req, res) => {
   const { code, markUsed, gate } = req.body;
   if (!code) return res.status(400).json({ error: 'code required' });
