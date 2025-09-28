@@ -1,241 +1,310 @@
-import { useEffect, useRef, useState } from 'react'
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode'
+require('dotenv').config()
+const express = require('express')
+const cors = require('cors')
+const Stripe = require('stripe')
+const nodemailer = require('nodemailer')
+const QRCode = require('qrcode')
+const PDFDocument = require('pdfkit')
+const mongoose = require('mongoose')
+const jwt = require('jsonwebtoken')
+const fs = require('fs')
+const path = require('path')
+const crypto = require('crypto')
 
-const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'
+const app = express()
+const PORT = Number(process.env.PORT || 5001)
+const FRONTEND = process.env.FRONTEND_URL || 'https://n2025-iota.vercel.app'
+const PRICE_GBP = Number(process.env.TICKET_PRICE_GBP || 12)
 
-export default function Admin() {
-  const [stage, setStage] = useState(localStorage.getItem('admin_token') ? 'scan' : 'login')
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [msg, setMsg] = useState('')
-  const [lastCode, setLastCode] = useState('')
-  const [manual, setManual] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  const [usingFront, setUsingFront] = useState(true)
-  const [isRunning, setIsRunning] = useState(false)
-
-  const [scannedTickets, setScannedTickets] = useState([])
-
-  const qrRef = useRef(null)
-  const readerId = 'reader'
-
-  useEffect(() => {
-    if (stage !== 'scan') return
-    startScanner(usingFront)
-
-    return () => { stopScanner() }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stage, usingFront])
-
-  async function startScanner(front) {
-    try {
-      await stopScanner()
-      if (!qrRef.current) qrRef.current = new Html5Qrcode(readerId, false)
-
-      const constraints = { facingMode: front ? 'user' : { exact: 'environment' } }
-
-      await qrRef.current.start(
-        constraints,
-        {
-          fps: 10,
-          qrbox: 260,
-          formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
-        },
-        onScanSuccess,
-        onScanError
-      )
-      setIsRunning(true)
-      setMsg(front ? 'Using FRONT camera' : 'Using BACK camera')
-    } catch (e) {
-      if (!usingFront) {
-        try {
-          const fallback = { facingMode: 'environment' }
-          await qrRef.current.start(fallback, { fps: 10, qrbox: 260 }, onScanSuccess, onScanError)
-          setIsRunning(true)
-          setMsg('Using BACK camera (fallback)')
-          return
-        } catch {}
-      }
-      setMsg(`Camera error: ${e?.message || e}`)
-    }
+const EVENT = {
+  title: process.env.EVENT_TITLE || 'Navratri 2025 Garba Night',
+  time:  process.env.EVENT_TIME  || '7:00 PM – 11:30 PM',
+  venue: process.env.EVENT_VENUE || '136 Greenford Road Sudbury Postoffice Club, HA1 3Ql',
+  days: {
+    '2025-09-26': 'Fri 26 Sep 2025',
+    '2025-09-28': 'Sun 28 Sep 2025',
   }
-
-  async function stopScanner() {
-    try {
-      if (qrRef.current && isRunning) {
-        await qrRef.current.stop()
-        await qrRef.current.clear()
-        setIsRunning(false)
-      }
-    } catch {}
-  }
-
-  function onScanError() {
-    // ignore
-  }
-
-  async function onScanSuccess(text) {
-    setMsg(`Raw scanned QR code: ${text}`)  // Show raw scanned text for debugging
-    let scannedCode = text.trim().toUpperCase()
-    if (!scannedCode || scannedCode === lastCode) return
-
-    // Try validating with full scanned code first
-    let valid = false
-    try {
-      await validate(scannedCode, true)
-      valid = true
-      setLastCode(scannedCode)
-    } catch (e) {
-      // If failed, try stripping "T|" prefix and validate again
-      if (scannedCode.startsWith('T|')) {
-        const strippedCode = scannedCode.slice(2)
-        if (strippedCode && strippedCode !== lastCode) {
-          try {
-            await validate(strippedCode, true)
-            valid = true
-            setLastCode(strippedCode)
-          } catch {}
-        }
-      }
-    }
-    if (!valid) {
-      setMsg('Scan failed: invalid ticket code')
-    }
-  }
-
-  async function login() {
-    setBusy(true); setMsg('')
-    try {
-      const r = await fetch(`${API}/api/admin/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-      })
-      const data = await r.json()
-      if (!r.ok) throw new Error(data.error || 'Login failed')
-      localStorage.setItem('admin_token', data.token)
-      setStage('scan')
-      setMsg('Logged in. Scanner ready.')
-    } catch (e) {
-      setMsg(e.message)
-    } finally { setBusy(false) }
-  }
-
-  function logout() {
-    localStorage.removeItem('admin_token')
-    setStage('login')
-    setMsg('')
-    setUsername(''); setPassword('')
-    stopScanner()
-  }
-
-  async function validate(code, markUsed = true) {
-    if (!code) return
-    setBusy(true)
-    try {
-      const r = await fetch(`${API}/api/admin/scan`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('admin_token') || ''}`
-        },
-        body: JSON.stringify({ code, markUsed, gate: 'Gate A' })
-      })
-      const data = await r.json()
-      if (!r.ok) throw new Error(data.error || 'Scan failed')
-
-      let statusMsg = ''
-      if (data.status === 'valid_marked') statusMsg = `✅ VALID — marked used · ${data.event}`
-      else if (data.status === 'already_used') statusMsg = `⚠️ ALREADY USED · ${new Date(data.usedAt).toLocaleString()}`
-      else if (data.status === 'valid') statusMsg = `✅ VALID`
-      else if (data.status === 'not_found') statusMsg = '❌ NOT FOUND'
-
-      setMsg(statusMsg)
-
-      // add ticket info to scanned history
-      setScannedTickets(prev => [
-        {
-          code: data.code || code,
-          status: data.status,
-          event: data.event,
-          usedAt: data.usedAt || null
-        },
-        ...prev
-      ])
-    } catch (e) {
-      setMsg(`Error: ${e.message}`)
-    } finally { setBusy(false) }
-  }
-
-  /* ---------- UI ---------- */
-
-  if (stage === 'login') {
-    return (
-      <section className="container max-w-md py-16">
-        <h1 className="text-3xl font-bold mb-6">Admin Login</h1>
-        <div className="space-y-4">
-          <input className="w-full border p-3 rounded-xl" placeholder="Username"
-            value={username} onChange={e => setUsername(e.target.value)} />
-          <input type="password" className="w-full border p-3 rounded-xl" placeholder="Password"
-            value={password} onChange={e => setPassword(e.target.value)} />
-          <button onClick={login} disabled={busy} className="bg-primary text-white px-5 py-3 rounded-xl disabled:opacity-60">
-            {busy ? 'Signing in…' : 'Sign in'}
-          </button>
-          {msg && <p className="text-sm text-gray-600">{msg}</p>}
-        </div>
-      </section>
-    )
-  }
-
-  return (
-    <section className="container py-10">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-3xl font-bold">Ticket Scanner</h2>
-        <div className="flex items-center gap-2">
-          <button className="px-4 py-2 rounded-xl border" onClick={() => { stopScanner().then(() => startScanner(usingFront)) }}>Refresh</button>
-          <button className="px-4 py-2 rounded-xl border" onClick={() => setUsingFront(v => !v)}>
-            {usingFront ? 'Use Back Camera' : 'Use Front Camera'}
-          </button>
-          <button onClick={logout} className="px-4 py-2 rounded-xl border bg-gray-50">Logout</button>
-        </div>
-      </div>
-
-      <p className="text-gray-600 mb-4">{msg || (usingFront ? 'Using FRONT camera' : 'Using BACK camera')}</p>
-
-      <div id={readerId} className="rounded-2xl overflow-hidden border" style={{ minHeight: 320 }} />
-
-      {/* Manual entry */}
-      <div className="mt-6 p-4 rounded-xl border bg-white/70">
-        <div className="font-semibold mb-2">Manual Entry</div>
-        <div className="flex gap-2">
-          <input
-            className="flex-1 border p-3 rounded-xl"
-            placeholder="Enter ticket code"
-            value={manual}
-            onChange={e => setManual(e.target.value.toUpperCase())}
-          />
-          <button
-            className="bg-primary text-white px-4 py-3 rounded-xl disabled:opacity-60"
-            disabled={busy || !manual.trim()}
-            onClick={() => validate(manual.trim(), true)}
-          >
-            Validate
-          </button>
-        </div>
-      </div>
-
-      {/* Scanned Tickets History */}
-      <div className="mt-6">
-        <h3 className="font-bold mb-2">Scanned Tickets</h3>
-        <ul className="space-y-2">
-          {scannedTickets.map((t, i) => (
-            <li key={i} className={`p-2 rounded-xl border ${t.status === 'valid_marked' ? 'bg-green-100' : t.status === 'already_used' ? 'bg-red-100' : 'bg-yellow-100'}`}>
-              {t.code} → {t.status} {t.usedAt ? `(at ${new Date(t.usedAt).toLocaleString()})` : ''}
-            </li>
-          ))}
-        </ul>
-      </div>
-    </section>
-  )
 }
+
+const DAY_LIMITS = {
+  '2025-09-26': 120,
+  '2025-09-28': 120,
+}
+
+/* -------------------- Mongo -------------------- */
+mongoose.connect(process.env.MONGODB_URI)
+  .then(()=>console.log('✅ MongoDB Atlas connected'))
+  .catch(e=>console.error('Mongo error:', e.message))
+
+/* -------------------- Schemas -------------------- */
+const orderSchema = new mongoose.Schema({
+  sessionId: { type:String, unique:true },
+  name: String,
+  email: String,
+  phone: String,
+  quantity: Number,
+  eventDate: String,
+  eventLabel: String,
+  amount: Number,
+  paid: { type:Boolean, default:false },
+  createdAt: { type:Date, default:Date.now }
+})
+
+const ticketSchema = new mongoose.Schema({
+  orderId: String,
+  code: { type:String, unique:true },
+  name: String,
+  email: String,
+  eventDate: String,
+  eventLabel: String,
+  used: { type:Boolean, default:false },
+  usedAt: Date,
+  usedBy: String,
+  createdAt: { type:Date, default:Date.now }
+})
+
+const Order  = mongoose.model('Order', orderSchema)
+const Ticket = mongoose.model('Ticket', ticketSchema)
+
+/* -------------------- Middleware -------------------- */
+app.use(express.json())
+
+// ✅ Updated CORS config
+const allowedOrigins = [
+  'http://localhost:5173',         // Vite local dev
+  'http://localhost:3000',         // CRA dev
+  'https://n2025-iota.vercel.app'  // Vercel deployed frontend
+]
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true) // allow Postman/curl
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = `CORS policy: Origin ${origin} not allowed`
+      return callback(new Error(msg), false)
+    }
+    return callback(null, true)
+  },
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  credentials: true
+}))
+
+// quick health
+app.get('/api/health', (req,res)=>{
+  res.json({ ok:true, mongo:true, hasStripeKey:!!process.env.STRIPE_SECRET_KEY, days:EVENT.days })
+})
+
+/* -------------------- Stripe Checkout -------------------- */
+app.post('/api/checkout', async (req,res)=>{
+  try {
+    const { quantity=1, name, email, phone, eventDate } = req.body || {}
+    if (!name || !email || !phone) return res.status(400).json({ error:'Name, email and phone are required.' })
+    if (!EVENT.days[eventDate]) return res.status(400).json({ error:'Please select a valid event day.' })
+
+    // ✅ Ticket limit check
+    const sold = await Ticket.countDocuments({ eventDate })
+    if (sold + Number(quantity) > DAY_LIMITS[eventDate]) {
+      return res.status(400).json({
+        error: `Sorry, only ${DAY_LIMITS[eventDate] - sold} tickets left for ${EVENT.days[eventDate]}.`
+      })
+    }
+
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
+    const unit_amount = Math.round(PRICE_GBP * 100)
+
+    const session = await stripe.checkout.sessions.create({
+      mode:'payment',
+      payment_method_types:['card'],
+      customer_email: email,
+      line_items:[{
+        price_data:{
+          currency:'gbp',
+          product_data:{ name:`${EVENT.title} — ${EVENT.days[eventDate]}` },
+          unit_amount
+        },
+        quantity: Math.max(1, Number(quantity))
+      }],
+      metadata:{ name,email,phone,quantity:String(quantity),eventDate },
+      success_url:`${FRONTEND}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url:`${FRONTEND}/cancel`
+    })
+
+    // Save pending order
+    await Order.findOneAndUpdate(
+      { sessionId: session.id },
+      {
+        sessionId: session.id,
+        name, email, phone,
+        quantity:Number(quantity),
+        eventDate,
+        eventLabel: EVENT.days[eventDate],
+        amount: (unit_amount*Number(quantity))/100,
+        paid:false
+      },
+      { upsert:true }
+    )
+
+    res.json({ url: session.url })
+  } catch (err) {
+    console.error('Checkout error:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+/* -------------------- Verify & Issue tickets -------------------- */
+app.post('/api/issue-ticket', async (req,res)=>{
+  try {
+    const { session_id } = req.body || {}
+    if (!session_id) return res.status(400).json({ error:'session_id required' })
+
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
+    const session = await stripe.checkout.sessions.retrieve(session_id)
+    if (session.payment_status !== 'paid') {
+      return res.status(400).json({ error:`Payment status is ${session.payment_status}` })
+    }
+
+    const order = await Order.findOne({ sessionId: session_id })
+    if (!order) return res.status(404).json({ error:'Order not found' })
+    if (order.paid) return res.json({ ok:true, alreadySent:true })
+
+    // ensure tickets exist (one per quantity)
+    let tickets = await Ticket.find({ orderId: order.sessionId })
+    if (tickets.length === 0) {
+      const docs = []
+      for (let i=0;i<order.quantity;i++){
+        const code = makeTicketCode()
+        docs.push({
+          orderId: order.sessionId,
+          code,
+          name: order.name,
+          email: order.email,
+          eventDate: order.eventDate,
+          eventLabel: order.eventLabel
+        })
+      }
+      tickets = await Ticket.insertMany(docs)
+    }
+
+    // email PDF
+    await sendTicketEmail({ order, tickets })
+
+    order.paid = true
+    await order.save()
+
+    res.json({ ok:true })
+  } catch (e) {
+    console.error('Issue-ticket error:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/* -------------------- Admin Auth + Scanner APIs -------------------- */
+app.post('/api/admin/scan', requireAdmin, async (req, res) => {
+  const { code, markUsed, gate } = req.body;
+  if (!code) return res.status(400).json({ error: 'code required' });
+
+  const ticket = await Ticket.findOne({ code });
+  if (!ticket) return res.json({ status: 'not_found' });
+
+  if (ticket.used) {
+    return res.json({ status: 'already_used', usedAt: ticket.usedAt });
+  }
+
+  if (markUsed) {
+    ticket.used = true;
+    ticket.usedAt = new Date();
+    ticket.usedBy = gate || 'Gate A';
+    await ticket.save();
+    return res.json({ status: 'valid_marked', eventLabel: ticket.eventLabel });
+  }
+
+  res.json({ status: 'valid', eventLabel: ticket.eventLabel });
+});
+
+
+/* -------------------- Mailer & PDF -------------------- */
+async function createTransporter() {
+  if (String(process.env.USE_ETHEREAL).toLowerCase()==='true') {
+    const test = await nodemailer.createTestAccount()
+    return nodemailer.createTransport({
+      host:'smtp.ethereal.email', port:587, secure:false,
+      auth:{ user:test.user, pass:test.pass }
+    })
+  }
+  const port = Number(process.env.SMTP_PORT || 465)
+  const secure = (process.env.SMTP_SECURE || '').toString().toLowerCase()==='true' || port===465
+  const transporter = nodemailer.createTransport({
+    host:process.env.SMTP_HOST, port, secure,
+    auth:{ user:process.env.SMTP_USER, pass:process.env.SMTP_PASS }
+  })
+  await transporter.verify()
+  return transporter
+}
+
+async function sendTicketEmail({ order, tickets }) {
+  const title = EVENT.title, time = EVENT.time, venue = EVENT.venue
+
+  const qrBuffers = await Promise.all(
+    tickets.map(async t => {
+      const dataURL = await QRCode.toDataURL(`T|${t.code}`, { margin: 1, width: 240 })
+      return Buffer.from(dataURL.split(',')[1], 'base64')
+    })
+  )
+
+  const doc = new PDFDocument({ size: 'A4', margin: 40 })
+  const chunks = []
+  doc.on('data', chunks.push.bind(chunks))
+  const done = new Promise(r => doc.on('end', r))
+
+  for (let i = 0; i < tickets.length; i++) {
+    const t = tickets[i]
+    if (i > 0) doc.addPage()
+
+    const pageW = doc.page.width
+    const pageH = doc.page.height
+
+    doc.save().rect(0, 0, pageW, pageH).fill('#fff7ed').restore()
+
+    doc.fillColor('#d946ef').fontSize(24).text(title, { align: 'center' })
+    doc.moveDown(0.5)
+    doc.fillColor('#111').fontSize(13)
+       .text(`${t.eventLabel} • ${time}`, { align: 'center' })
+       .text(venue, { align: 'center' })
+    doc.moveDown(1)
+
+    doc.fontSize(14).fillColor('#111')
+       .text(`Ticket for: ${t.name}`)
+       .text(`Email: ${t.email}`)
+       .text(`Order: ${order.sessionId}`)
+       .text(`Ticket Code: ${t.code}`)
+
+    doc.image(qrBuffers[i], pageW - 300, 180, { width: 200 })
+    doc.fontSize(10).fillColor('#6b7280')
+       .text('Present this QR at entry. One scan = one entry.',
+             pageW - 300, 390, { width: 200, align: 'center' })
+  }
+
+  doc.end(); await done
+  const pdfBuffer = Buffer.concat(chunks)
+
+  const transporter = await createTransporter()
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || `Navratri Tickets <${process.env.SMTP_USER}>`,
+    to: order.email,
+    subject: `Your Navratri 2025 E-Ticket(s) — ${order.eventLabel}`,
+    html: `<p>Hi ${order.name},</p>
+           <p>Thanks for booking <b>${order.quantity}</b> ticket(s) for <b>${title}</b> on <b>${order.eventLabel}</b>.</p>
+           <p>Your tickets are attached. Each page contains one unique QR code and ticket code.</p>`,
+    attachments: [{ filename: `Navratri-2025-Tickets-${order.sessionId}.pdf`, content: pdfBuffer }]
+  })
+}
+
+/* -------------------- Helpers -------------------- */
+function makeTicketCode() {
+  return crypto.randomBytes(7).toString('base64url').toUpperCase()
+}
+
+/* -------------------- Start -------------------- */
+app.listen(PORT, ()=> {
+  console.log(`🚀 Backend running on https://n2025.onrender.com`)
+})
